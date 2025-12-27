@@ -10,11 +10,12 @@ from playwright.sync_api import sync_playwright
 # ---------------------------------------------------------
 NTFY_TOPIC = "stock-info"
 DATA_FILE = "latest_data.json"
-STATUS_FILE = "monitor_status.json" # [추가] 상태 저장 파일
+STATUS_FILE = "monitor_status.json"
 
 # 시간 설정 (초 단위)
 INTERVAL_NORMAL = 3600    # 1시간
 INTERVAL_IDLE = 86400     # 24시간
+HEARTBEAT_INTERVAL = 86400 # 24시간 (생존신고 주기)
 
 # 24번(24시간) 연속 변경 없으면 24시간 간격으로 전환
 THRESHOLD_TO_IDLE = 24    
@@ -48,13 +49,12 @@ def send_ntfy(message, title="Benecafe 알림", priority="default"):
         print(f"[Ntfy] Error: {e}")
 
 def send_alert(msg, title="알림", priority="default"):
-    # 통합 알림 발송 헬퍼
     print(f"[Alert] {msg}")
     send_ntfy(msg, title, priority)
     send_telegram(f"[{title}] {msg}")
 
 # ---------------------------------------------------------
-# 베네카페 크롤링 로직 (기존 동일)
+# 베네카페 크롤링 로직
 # ---------------------------------------------------------
 def run_benecafe(playwright):
     user_id = os.environ.get("BENECAFE_ID")
@@ -113,34 +113,40 @@ def run_benecafe(playwright):
         browser.close()
 
 # ---------------------------------------------------------
-# 메인 로직 (1시간 <-> 24시간 동적 스케줄링)
+# 메인 로직
 # ---------------------------------------------------------
 def main():
     # 1. 상태 로드
-    status = {"last_check_ts": 0, "no_change_count": 0}
+    status = {
+        "last_check_ts": 0, 
+        "no_change_count": 0, 
+        "last_heartbeat_ts": 0 # [추가] 마지막 알림(생존신고/변동) 시간
+    }
+    
     if os.path.exists(STATUS_FILE):
         try:
             with open(STATUS_FILE, "r") as f:
-                status = json.load(f)
+                loaded_status = json.load(f)
+                status.update(loaded_status)
         except:
             pass
 
     last_check_ts = status.get("last_check_ts", 0)
     no_change_count = status.get("no_change_count", 0)
+    last_heartbeat_ts = status.get("last_heartbeat_ts", 0)
     current_ts = time.time()
 
-    # 2. 현재 모드 결정 (24회 이상 변경 없으면 24시간 모드)
+    # 2. 현재 모드 결정
     if no_change_count >= THRESHOLD_TO_IDLE:
-        required_interval = INTERVAL_IDLE # 24시간
+        required_interval = INTERVAL_IDLE
         mode_str = "🌙 절전 모드 (24시간)"
     else:
-        required_interval = INTERVAL_NORMAL # 1시간
+        required_interval = INTERVAL_NORMAL
         mode_str = "⚡ 일반 모드 (1시간)"
 
     # 3. 실행 시간 체크
     time_since = current_ts - last_check_ts
     if time_since < required_interval:
-        # 아직 실행할 때가 아님 -> 종료
         next_run = datetime.fromtimestamp(last_check_ts + required_interval)
         print(f"⏳ [{mode_str}] 대기 중... (다음 실행: {next_run.strftime('%H:%M:%S')})")
         return
@@ -170,27 +176,34 @@ def main():
     if current_json_str != prev_json_str:
         # [변경 발생]
         print("!! 변경 사항 감지 !!")
-        
-        # 파일 저장
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             f.write(current_json_str)
 
-        # 알림 발송 (긴급)
         send_alert(f"Benecafe 변동 감지!\n확인 시간: {check_time}", title="변경 발생 🚨", priority="high")
         
-        # 상태 초기화 (즉시 일반 모드로 복귀)
         status["no_change_count"] = 0
+        status["last_heartbeat_ts"] = current_ts # [중요] 변동 알림이 갔으니 생존신고 타이머 리셋
         
     else:
         # [변경 없음]
         status["no_change_count"] += 1
         print(f"✅ 변경 없음 (연속 {status['no_change_count']}회)")
         
-        # 모드가 변경되는 순간에만 알림
+        # 1) 모드 전환 시 알림
         if status["no_change_count"] == THRESHOLD_TO_IDLE:
             send_alert(f"24시간 동안 변경 없음. 24시간 간격으로 전환합니다.", title="모드 변경 🌙", priority="low")
+            status["last_heartbeat_ts"] = current_ts # 알림 보냈으므로 리셋
+            
+        # 2) [추가된 로직] 생존 신고 (마지막 알림으로부터 24시간 경과 시)
+        elif current_ts - last_heartbeat_ts >= HEARTBEAT_INTERVAL:
+            send_alert(
+                f"현재 모니터링 정상 작동 중입니다.\n(현재 모드: {mode_str})", 
+                title="생존 신고 👋", 
+                priority="min" # 소리 작게
+            )
+            status["last_heartbeat_ts"] = current_ts # 알림 보냈으므로 리셋
 
-    # 6. 상태 업데이트 및 저장
+    # 6. 상태 저장
     status["last_check_ts"] = current_ts
     with open(STATUS_FILE, "w") as f:
         json.dump(status, f)
