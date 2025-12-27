@@ -34,6 +34,8 @@ jobs:
         env:
           BENECAFE_ID: ${{ secrets.BENECAFE_ID }}
           BENECAFE_PW: ${{ secrets.BENECAFE_PW }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python monitor.py
 
       - name: 데이터 변경 및 활동 유지 (통합 관리)

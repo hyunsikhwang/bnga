@@ -10,9 +10,34 @@ from playwright.sync_api import sync_playwright
 NTFY_TOPIC = "stock-info"
 DATA_FILE = "latest_data.json"
 
+# 1. 텔레그램 알림 함수 추가
+def send_telegram(message):
+    token = os.environ.get("TELEGRAM_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    
+    # 설정이 없으면 텔레그램 전송 건너뜀
+    if not token or not chat_id:
+        print("[Telegram] 토큰 또는 Chat ID가 설정되지 않았습니다.")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message
+    }
+    
+    try:
+        resp = requests.post(url, json=payload)
+        if resp.status_code == 200:
+            print(f"[Telegram] Sent: {message}")
+        else:
+            print(f"[Telegram] Failed: {resp.text}")
+    except Exception as e:
+        print(f"[Telegram] Error: {e}")
+
+# 2. 기존 ntfy 알림 함수
 def send_ntfy(message, title="Benecafe 알림", priority="default"):
     try:
-        # [수정됨] 헤더에 한글이 포함될 경우 utf-8 바이트로 변환해야 전송 가능
         headers = {
             "Title": title.encode('utf-8'),
             "Priority": priority
@@ -23,9 +48,9 @@ def send_ntfy(message, title="Benecafe 알림", priority="default"):
             data=message.encode('utf-8'),
             headers=headers
         )
-        print(f"[Notification] Sent: {message}")
+        print(f"[Ntfy] Sent: {message}")
     except Exception as e:
-        print(f"[Notification] Error: {e}")
+        print(f"[Ntfy] Error: {e}")
 
 def run_benecafe(playwright):
     user_id = os.environ.get("BENECAFE_ID")
@@ -117,22 +142,34 @@ def main():
     if current_json_str != prev_json_str:
         print("!! 변경 사항 감지 !!")
         
+        # 메시지 내용 구성
+        msg_body = f"Benecafe 복지카드 내역 변동 감지!\n확인 시간: {check_time}"
+        
+        # 1. Ntfy 전송
         send_ntfy(
-            f"Benecafe 복지카드 내역 변동 감지!\n확인 시간: {check_time}",
+            msg_body,
             title="Benecafe 변경 발생 🚨",
             priority="high"
         )
+        # 2. Telegram 전송
+        send_telegram(f"🚨 {msg_body}")
         
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             f.write(current_json_str)
     else:
         print("변경 사항 없음.")
         
+        # 메시지 내용 구성
+        msg_body = f"변경 사항 없음.\n확인 시간: {check_time}"
+
+        # 1. Ntfy 전송
         send_ntfy(
-            f"변경 사항 없음.\n확인 시간: {check_time}",
+            msg_body,
             title="Benecafe 모니터링",
             priority="low"
         )
+        # 2. Telegram 전송 (필요 없으면 주석 처리 가능)
+        send_telegram(f"✅ {msg_body}")
 
 if __name__ == "__main__":
     main()
