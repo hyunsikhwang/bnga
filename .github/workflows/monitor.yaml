@@ -2,11 +2,12 @@ name: Benecafe Monitor
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    # 1시간마다 실행 (매시 정각)
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write # 쓰기 권한 명시
+  contents: write
 
 jobs:
   monitor:
@@ -15,10 +16,10 @@ jobs:
       TZ: 'Asia/Seoul'
 
     steps:
-      - name: 저장소 체크아웃 (전체 기록 가져오기)
+      - name: 저장소 체크아웃
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 마지막 커밋 날짜를 확인하기 위해 필요
+          fetch-depth: 0
 
       - name: Python 설정
         uses: actions/setup-python@v4
@@ -38,30 +39,27 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python monitor.py
 
-      - name: 데이터 변경 및 활동 유지 (통합 관리)
+      - name: 데이터 변경 및 상태 저장
         run: |
           git config --global user.name "Benecafe Bot"
           git config --global user.email "bot@noreply.github.com"
           
-          # 1. 데이터 변경 확인
-          if [[ -n $(git status -s latest_data.json) ]]; then
-            echo "데이터 변경 감지. 커밋합니다."
-            git add latest_data.json
-            git commit -m "Update benecafe data: $(date +'%Y-%m-%d %H:%M:%S')"
+          # 파일 변경 여부 확인 (monitor.py 실행으로 json 파일들이 변경되었는지)
+          if [[ -n $(git status -s) ]]; then
+            echo "변경 사항(데이터 또는 상태값)이 있어 커밋합니다."
+            git add .
+            git commit -m "Update monitor data/status: $(date +'%Y-%m-%d %H:%M:%S')"
             git push
           else
-            echo "데이터 변경 없음."
+            echo "변경 사항 없음."
             
-            # 2. 마지막 커밋으로부터 50일 지났는지 확인 (Keepalive)
+            # Keepalive (50일 미사용 방지)
             LAST_COMMIT=$(git log -1 --format=%ct)
             NOW=$(date +%s)
             DIFF=$((NOW - LAST_COMMIT))
             # 50일 = 4320000초
             if [ $DIFF -ge 4320000 ]; then
-              echo "50일 이상 활동 없음. 저장소 활성화를 위해 빈 커밋을 생성합니다."
               git commit --allow-empty -m "Automated keepalive commit"
               git push
-            else
-              echo "아직 활동 유지 기간(50일) 이내입니다."
             fi
           fi
