@@ -1,0 +1,53 @@
+name: Benecafe Monitor
+
+on:
+  schedule:
+    # 10분마다 실행 (참고: Github Actions는 부하에 따라 정확히 10분을 보장하지 않고 지연될 수 있음)
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # 수동 실행 버튼 활성화
+
+permissions:
+  contents: write # 저장소에 파일을 커밋하기 위한 권한
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    # 시간대 설정 (로그 확인용)
+    env:
+      TZ: 'Asia/Seoul'
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 의존성 설치
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+
+      - name: 모니터링 스크립트 실행
+        env:
+          BENECAFE_ID: ${{ secrets.BENECAFE_ID }}
+          BENECAFE_PW: ${{ secrets.BENECAFE_PW }}
+        run: python monitor.py
+
+      - name: 변경 사항 커밋 및 푸시
+        # latest_data.json이 변경되었을 때만 실행됨
+        run: |
+          git config --global user.name "Benecafe Bot"
+          git config --global user.email "bot@noreply.github.com"
+          
+          # 파일이 변경되었는지 확인
+          if [[ -n $(git status -s latest_data.json) ]]; then
+            git add latest_data.json
+            git commit -m "Update benecafe data: $(date +'%Y-%m-%d %H:%M:%S')"
+            git push
+          else
+            echo "No changes to commit."
+          fi
