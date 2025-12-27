@@ -6,23 +6,23 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
-# 설정: ntfy 토픽 (본인의 토픽으로 변경 가능하나 요청하신 주소 사용)
+# 설정: ntfy 토픽
 NTFY_TOPIC = "stock-info"
 DATA_FILE = "latest_data.json"
 
-def send_ntfy(message):
+# [수정] 제목(title)과 우선순위(priority)를 인자로 받도록 개선
+def send_ntfy(message, title="Benecafe 알림", priority="default"):
     try:
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode('utf-8'),
-            headers={"Title": "Benecafe 변경 감지", "Priority": "high"}
+            headers={"Title": title, "Priority": priority}
         )
         print(f"[Notification] Sent: {message}")
     except Exception as e:
         print(f"[Notification] Error: {e}")
 
 def run_benecafe(playwright):
-    # Github Secrets에서 환경변수로 불러옴
     user_id = os.environ.get("BENECAFE_ID")
     user_pw = os.environ.get("BENECAFE_PW")
 
@@ -33,7 +33,6 @@ def run_benecafe(playwright):
         headless=True,
         args=["--no-sandbox", "--disable-dev-shm-usage"]
     )
-    # 로케일 및 타임존 설정
     context = browser.new_context(
         ignore_https_errors=True, 
         timezone_id="Asia/Seoul", 
@@ -53,10 +52,8 @@ def run_benecafe(playwright):
         page.get_by_role("link", name="로그인", exact=True).click()
 
         print("3. 로그인 완료 대기 중...")
-        # 로그인 성공 지표
         page.wait_for_selector('text="나의정보"', timeout=60_000)
 
-        # 팝업 닫기 시도
         try:
             close_btn = page.get_by_role("link", name="닫기")
             if close_btn.count() > 0:
@@ -64,13 +61,11 @@ def run_benecafe(playwright):
         except:
             pass
 
-        # 4. API 호출을 위한 날짜 계산 (오늘 기준 최근 1달)
         today_str = datetime.now().strftime("%Y-%m-%d")
         last_month_str = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         
         print(f"4. 데이터 조회 중 ({last_month_str} ~ {today_str})...")
 
-        # API URL 구성 (날짜 동적 할당)
         api_url = (
             "https://rga.benecafe.co.kr/mywel/getWelfarecardDemandListVer"
             "?crdcoNo=HA&rtnTpCd=&crtcrdProdNo=&ecluCrtcrdRealHhAskYn=N&necluCrtcrdRealHhAskYn=N"
@@ -84,11 +79,10 @@ def run_benecafe(playwright):
         if resp.status != 200:
             raise RuntimeError(f"Benecafe API Error: {resp.status}")
 
-        return resp.json()  # JSON 형태로 반환
+        return resp.json()
 
     except Exception as e:
         print(f"[Error] {e}")
-        # 에러 발생 시 디버깅용 스크린샷 (Github Actions Artifact로 확인 가능하게 하려면 경로 설정 필요)
         return None
     finally:
         context.close()
@@ -100,9 +94,9 @@ def main():
 
     if not current_data:
         print("데이터를 가져오지 못했습니다.")
+        # 에러 발생 시에도 알림을 받고 싶다면 여기서도 send_ntfy 호출 가능
         return
 
-    # 기존 데이터 로드
     previous_data = None
     if os.path.exists(DATA_FILE):
         try:
@@ -111,23 +105,32 @@ def main():
         except:
             pass
 
-    # 비교 로직 (단순 문자열 비교 또는 특정 키 비교)
-    # 여기서는 JSON 전체 구조가 바뀌었는지 확인합니다.
     current_json_str = json.dumps(current_data, sort_keys=True, ensure_ascii=False)
     prev_json_str = json.dumps(previous_data, sort_keys=True, ensure_ascii=False) if previous_data else ""
+
+    check_time = datetime.now().strftime('%H:%M')
 
     if current_json_str != prev_json_str:
         print("!! 변경 사항 감지 !!")
         
-        # 상세 변경 내용을 알림에 포함하고 싶다면 파싱해서 메시지를 만드세요.
-        # 예시: 간단히 알림만 발송
-        send_ntfy(f"Benecafe 복지카드 내역 변동 감지!\n확인 시간: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        # 변경 감지 시: Priority High, 제목 강조
+        send_ntfy(
+            f"Benecafe 복지카드 내역 변동 감지!\n확인 시간: {check_time}",
+            title="Benecafe 변경 발생 🚨",
+            priority="high"
+        )
         
-        # 상태 업데이트 (파일 저장)
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             f.write(current_json_str)
     else:
         print("변경 사항 없음.")
+        
+        # [추가됨] 변경 없음 시: Priority Low (알림음 작게), 제목 일반
+        send_ntfy(
+            f"변경 사항 없음.\n확인 시간: {check_time}",
+            title="Benecafe 모니터링",
+            priority="low"
+        )
 
 if __name__ == "__main__":
     main()
