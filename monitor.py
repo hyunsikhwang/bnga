@@ -10,13 +10,18 @@ from playwright.sync_api import sync_playwright
 NTFY_TOPIC = "stock-info"
 DATA_FILE = "latest_data.json"
 
-# [수정] 제목(title)과 우선순위(priority)를 인자로 받도록 개선
 def send_ntfy(message, title="Benecafe 알림", priority="default"):
     try:
+        # [수정됨] 헤더에 한글이 포함될 경우 utf-8 바이트로 변환해야 전송 가능
+        headers = {
+            "Title": title.encode('utf-8'),
+            "Priority": priority
+        }
+        
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode('utf-8'),
-            headers={"Title": title, "Priority": priority}
+            headers=headers
         )
         print(f"[Notification] Sent: {message}")
     except Exception as e:
@@ -94,7 +99,6 @@ def main():
 
     if not current_data:
         print("데이터를 가져오지 못했습니다.")
-        # 에러 발생 시에도 알림을 받고 싶다면 여기서도 send_ntfy 호출 가능
         return
 
     previous_data = None
@@ -113,7 +117,6 @@ def main():
     if current_json_str != prev_json_str:
         print("!! 변경 사항 감지 !!")
         
-        # 변경 감지 시: Priority High, 제목 강조
         send_ntfy(
             f"Benecafe 복지카드 내역 변동 감지!\n확인 시간: {check_time}",
             title="Benecafe 변경 발생 🚨",
@@ -125,7 +128,6 @@ def main():
     else:
         print("변경 사항 없음.")
         
-        # [추가됨] 변경 없음 시: Priority Low (알림음 작게), 제목 일반
         send_ntfy(
             f"변경 사항 없음.\n확인 시간: {check_time}",
             title="Benecafe 모니터링",
