@@ -54,6 +54,80 @@ def send_alert(msg, title="알림", priority="default"):
     send_telegram(f"[{title}] {msg}")
 
 # ---------------------------------------------------------
+# 데이터 처리 및 비교 헬퍼 함수 (핵심 수정 부분)
+# ---------------------------------------------------------
+def get_welfare_list(data):
+    """
+    JSON 구조:
+    {
+        "resultMap": {
+            "welfarecardDemandList": [ ... ]
+        }
+    }
+    경로에 맞춰 리스트를 추출합니다.
+    """
+    try:
+        if not data:
+            return []
+        
+        # 제공된 JSON 구조 반영
+        result_map = data.get("resultMap")
+        if result_map and isinstance(result_map, dict):
+            return result_map.get("welfarecardDemandList", [])
+        
+        return []
+    except Exception as e:
+        print(f"[Parse Error] 데이터 구조 분석 실패: {e}")
+        return []
+
+def get_item_id(item):
+    """
+    고유 식별자 'applSeq'를 반환합니다.
+    """
+    return str(item.get("applSeq", ""))
+
+def format_currency(value):
+    try:
+        return f"{int(value):,}원"
+    except:
+        return str(value)
+
+def compare_data(prev_data, curr_data):
+    """
+    이전 데이터와 현재 데이터를 비교하여 유의미한 변경(신규, 상태변경)만 추출합니다.
+    삭제된 항목(기간 경과)은 무시합니다.
+    """
+    prev_list = get_welfare_list(prev_data)
+    curr_list = get_welfare_list(curr_data)
+
+    # ID 기준으로 딕셔너리 변환 (applSeq -> Item)
+    prev_map = {get_item_id(item): item for item in prev_list if get_item_id(item)}
+    curr_map = {get_item_id(item): item for item in curr_list if get_item_id(item)}
+
+    changes = []
+    
+    # 현재 리스트를 순회하며 확인
+    for item_id, curr_item in curr_map.items():
+        curr_stat = curr_item.get('cstApplStatNm', '미상')  # 상태값 (예: 전송완료)
+        merch_nm = curr_item.get('mcnsNm', '알수없음')       # 가맹점명 (예: 네이버페이)
+        amount = format_currency(curr_item.get('usePrc', 0)) # 사용금액
+
+        if item_id not in prev_map:
+            # [CASE 1] 신규 항목 발견
+            changes.append(f"🆕 [신규] {merch_nm} / {amount} ({curr_stat})")
+        else:
+            # [CASE 2] 기존 항목 존재 -> 상태 비교
+            prev_item = prev_map[item_id]
+            prev_stat = prev_item.get('cstApplStatNm', '미상')
+            
+            if curr_stat != prev_stat:
+                changes.append(f"🔄 [상태변경] {merch_nm}: {prev_stat} ➔ {curr_stat}")
+
+    # 삭제된 항목은 무시 (알림 없음)
+    
+    return changes
+
+# ---------------------------------------------------------
 # 베네카페 크롤링 로직
 # ---------------------------------------------------------
 def run_benecafe(playwright):
@@ -120,7 +194,7 @@ def main():
     status = {
         "last_check_ts": 0, 
         "no_change_count": 0, 
-        "last_heartbeat_ts": 0 # [추가] 마지막 알림(생존신고/변동) 시간
+        "last_heartbeat_ts": 0
     }
     
     if os.path.exists(STATUS_FILE):
@@ -160,7 +234,7 @@ def main():
         print("❌ 데이터 수집 실패")
         return
 
-    # 5. 데이터 비교
+    # 5. 데이터 비교 로직
     previous_data = None
     if os.path.exists(DATA_FILE):
         try:
@@ -168,40 +242,54 @@ def main():
                 previous_data = json.load(f)
         except:
             pass
-
+    
+    # 변경 사항 감지
+    change_logs = compare_data(previous_data, current_data)
+    
+    # 파일 저장을 위한 JSON 문자열 (항상 최신 데이터로 덮어쓰기)
     current_json_str = json.dumps(current_data, sort_keys=True, ensure_ascii=False)
-    prev_json_str = json.dumps(previous_data, sort_keys=True, ensure_ascii=False) if previous_data else ""
+    
     check_time = datetime.now().strftime('%H:%M')
 
-    if current_json_str != prev_json_str:
-        # [변경 발생]
-        print("!! 변경 사항 감지 !!")
+    if change_logs:
+        # [변경 발생: 신규 추가 또는 상태 변경]
+        print(f"!! 변경 사항 감지 !! ({len(change_logs)}건)")
+        for log in change_logs:
+            print(log)
+
+        # 데이터 파일 갱신
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             f.write(current_json_str)
 
-        send_alert(f"Benecafe 변동 감지!\n확인 시간: {check_time}", title="변경 발생 🚨", priority="high")
+        # 알림 메시지 구성
+        alert_msg = f"확인 시간: {check_time}\n" + "\n".join(change_logs)
+        send_alert(alert_msg, title="Benecafe 변동 🚨", priority="high")
         
         status["no_change_count"] = 0
-        status["last_heartbeat_ts"] = current_ts # [중요] 변동 알림이 갔으니 생존신고 타이머 리셋
+        status["last_heartbeat_ts"] = current_ts 
         
     else:
         # [변경 없음]
+        # 데이터 파일은 최신 상태로 갱신 (삭제된 항목 반영을 위해)
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            f.write(current_json_str)
+
         status["no_change_count"] += 1
-        print(f"✅ 변경 없음 (연속 {status['no_change_count']}회)")
+        print(f"✅ 유의미한 변경 없음 (연속 {status['no_change_count']}회)")
         
-        # 1) 모드 전환 시 알림
+        # 1) 모드 전환 알림
         if status["no_change_count"] == THRESHOLD_TO_IDLE:
             send_alert(f"24시간 동안 변경 없음. 24시간 간격으로 전환합니다.", title="모드 변경 🌙", priority="low")
-            status["last_heartbeat_ts"] = current_ts # 알림 보냈으므로 리셋
+            status["last_heartbeat_ts"] = current_ts 
             
-        # 2) [추가된 로직] 생존 신고 (마지막 알림으로부터 24시간 경과 시)
+        # 2) 생존 신고
         elif current_ts - last_heartbeat_ts >= HEARTBEAT_INTERVAL:
             send_alert(
                 f"현재 모니터링 정상 작동 중입니다.\n(현재 모드: {mode_str})", 
                 title="생존 신고 👋", 
-                priority="min" # 소리 작게
+                priority="min"
             )
-            status["last_heartbeat_ts"] = current_ts # 알림 보냈으므로 리셋
+            status["last_heartbeat_ts"] = current_ts
 
     # 6. 상태 저장
     status["last_check_ts"] = current_ts
