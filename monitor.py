@@ -232,6 +232,7 @@ def main():
 
     if not current_data:
         print("❌ 데이터 수집 실패")
+        send_telegram("❌ Benecafe 데이터 수집 실패")
         return
 
     # 5. 데이터 비교 로직
