@@ -156,7 +156,18 @@ def run_benecafe(playwright):
         page.get_by_placeholder("아이디").fill(user_id)
         page.get_by_placeholder("비밀번호").fill(user_pw)
         page.get_by_role("link", name="로그인", exact=True).click()
-        page.wait_for_selector('text="나의정보"', timeout=60_000)
+
+        # 비밀번호 변경 페이지 처리
+        try:
+            if page.get_by_text("비밀번호 변경", timeout=5000).count() > 0:
+                print("비밀번호 변경 페이지 감지 - '다음에 변경하기' 버튼 클릭")
+                page.get_by_role("link", name="다음에 변경하기").click()
+                page.wait_for_selector('text="나의정보"', timeout=60_000)
+            else:
+                page.wait_for_selector('text="나의정보"', timeout=60_000)
+        except Exception as e:
+            print(f"[비밀번호 변경 페이지 처리 오류] {e}")
+            pass
 
         try:
             if page.get_by_role("link", name="닫기").count() > 0:
