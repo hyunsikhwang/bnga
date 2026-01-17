@@ -159,7 +159,11 @@ def run_benecafe(playwright):
 
         # 비밀번호 변경 페이지 처리
         try:
-            if page.get_by_text("비밀번호 변경", timeout=5000).count() > 0:
+            # 비밀번호 변경 페이지가 로드될 시간을 기다림
+            page.wait_for_timeout(5000)
+
+            # 비밀번호 변경 페이지인지 확인
+            if page.get_by_text("비밀번호변경").count() > 0:
                 print("비밀번호 변경 페이지 감지 - '다음에 변경하기' 버튼 클릭")
                 page.get_by_role("link", name="다음에 변경하기").click()
                 page.wait_for_selector('text="나의정보"', timeout=60_000)
