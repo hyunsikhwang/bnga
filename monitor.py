@@ -2,8 +2,10 @@ import os
 import json
 import time
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from playwright.sync_api import sync_playwright
+
+from benecafe_url import build_welfarecard_demand_url
 
 # ---------------------------------------------------------
 # 설정값
@@ -179,15 +181,7 @@ def run_benecafe(playwright):
         except:
             pass
 
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        last_month_str = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        
-        api_url = (
-            "https://rga.benecafe.co.kr/mywel/getWelfarecardDemandListVer"
-            "?crdcoNo=HA&rtnTpCd=&crtcrdProdNo=&ecluCrtcrdRealHhAskYn=N&necluCrtcrdRealHhAskYn=N"
-            f"&searchStartDate={last_month_str}&searchEndDate={today_str}"
-            "&applStatCd=00&alreadyApplicationExclustion=&multiCrtcrdRealYn=false&adminPswd="
-        )
+        api_url = build_welfarecard_demand_url()
 
         resp = context.request.get(api_url, timeout=60_000)
         if resp.status != 200:
