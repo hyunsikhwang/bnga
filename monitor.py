@@ -22,6 +22,25 @@ HEARTBEAT_INTERVAL = 86400 # 24시간 (생존신고 주기)
 # 24번(24시간) 연속 변경 없으면 24시간 간격으로 전환
 THRESHOLD_TO_IDLE = 24    
 
+
+class BenecafeCollectionError(RuntimeError):
+    """사용자에게 전달할 수 있는 데이터 수집 실패 원인입니다."""
+
+
+def summarize_exception(error, max_length=300):
+    """민감한 상세 로그 대신 예외의 첫 줄만 간결하게 반환합니다."""
+    summary = next(
+        (line.strip() for line in str(error).splitlines() if line.strip()),
+        error.__class__.__name__,
+    )
+    if len(summary) > max_length:
+        return f"{summary[:max_length - 1]}…"
+    return summary
+
+
+def format_collection_failure_message(reason):
+    return f"❌ Benecafe 데이터 수집 실패\n원인: {reason}"
+
 # ---------------------------------------------------------
 # 알림 함수
 # ---------------------------------------------------------
@@ -136,64 +155,85 @@ def run_benecafe(playwright):
     user_id = os.environ.get("BENECAFE_ID")
     user_pw = os.environ.get("BENECAFE_PW")
 
-    if not user_id or not user_pw:
-        print("환경변수 미설정")
-        return None
+    missing_settings = []
+    if not user_id:
+        missing_settings.append("BENECAFE_ID")
+    if not user_pw:
+        missing_settings.append("BENECAFE_PW")
+    if missing_settings:
+        raise BenecafeCollectionError(
+            f"로그인 정보 미설정 ({', '.join(missing_settings)})"
+        )
 
-    browser = playwright.chromium.launch(
-        headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"]
-    )
-    context = browser.new_context(
-        ignore_https_errors=True, 
-        timezone_id="Asia/Seoul", 
-        locale="ko-KR",
-        user_agent="Mozilla/5.0"
-    )
-    context.set_default_timeout(60_000)
-    page = context.new_page()
-
+    browser = None
+    context = None
+    stage = "브라우저 실행"
     try:
+        browser = playwright.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+            timezone_id="Asia/Seoul",
+            locale="ko-KR",
+            user_agent="Mozilla/5.0"
+        )
+        context.set_default_timeout(60_000)
+        page = context.new_page()
+
+        stage = "로그인 페이지 접속"
         page.goto("https://cert.benecafe.co.kr/member/login?&cmpyNo=AA5", wait_until="domcontentloaded")
+        stage = "로그인 정보 입력"
         page.get_by_placeholder("아이디").fill(user_id)
         page.get_by_placeholder("비밀번호").fill(user_pw)
         page.get_by_role("link", name="로그인", exact=True).click()
 
         # 비밀번호 변경 페이지 처리
-        try:
-            # 비밀번호 변경 페이지가 로드될 시간을 기다림
-            page.wait_for_timeout(5000)
-
-            # 비밀번호 변경 페이지인지 확인
-            if page.get_by_text("비밀번호변경").count() > 0:
-                print("비밀번호 변경 페이지 감지 - '다음에 변경하기' 버튼 클릭")
-                page.get_by_role("link", name="다음에 변경하기").click()
-                page.wait_for_selector('text="나의정보"', timeout=60_000)
-            else:
-                page.wait_for_selector('text="나의정보"', timeout=60_000)
-        except Exception as e:
-            print(f"[비밀번호 변경 페이지 처리 오류] {e}")
-            pass
+        stage = "로그인 완료 확인"
+        page.wait_for_timeout(5000)
+        if page.get_by_text("비밀번호변경").count() > 0:
+            print("비밀번호 변경 페이지 감지 - '다음에 변경하기' 버튼 클릭")
+            page.get_by_role("link", name="다음에 변경하기").click()
+        page.wait_for_selector('text="나의정보"', timeout=60_000)
 
         try:
             if page.get_by_role("link", name="닫기").count() > 0:
                 page.get_by_role("link", name="닫기").first.click()
-        except:
+        except Exception:
             pass
 
+        stage = "데이터 API 요청"
         api_url = build_welfarecard_demand_url()
-
         resp = context.request.get(api_url, timeout=60_000)
         if resp.status != 200:
-            return None
-        return resp.json()
+            raise BenecafeCollectionError(
+                f"데이터 API 응답 오류 (HTTP {resp.status})"
+            )
 
-    except Exception as e:
-        print(f"[Error] {e}")
-        return None
+        stage = "데이터 API 응답 해석"
+        data = resp.json()
+        if not data:
+            raise BenecafeCollectionError("데이터 API 응답이 비어 있음")
+        return data
+
+    except BenecafeCollectionError:
+        raise
+    except Exception as error:
+        raise BenecafeCollectionError(
+            f"{stage} 실패: {summarize_exception(error)}"
+        ) from error
     finally:
-        context.close()
-        browser.close()
+        if context is not None:
+            try:
+                context.close()
+            except Exception as error:
+                print(f"[Context Close Error] {summarize_exception(error)}")
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception as error:
+                print(f"[Browser Close Error] {summarize_exception(error)}")
 
 # ---------------------------------------------------------
 # 메인 로직
@@ -236,12 +276,26 @@ def main():
 
     # 4. 크롤링 수행
     print(f"🚀 [{mode_str}] 확인 시작...")
-    with sync_playwright() as playwright:
-        current_data = run_benecafe(playwright)
+    try:
+        with sync_playwright() as playwright:
+            current_data = run_benecafe(playwright)
+    except BenecafeCollectionError as error:
+        failure_message = format_collection_failure_message(str(error))
+        print(failure_message)
+        send_telegram(failure_message)
+        return
+    except Exception as error:
+        failure_message = format_collection_failure_message(
+            f"모니터링 실행 환경 준비 실패: {summarize_exception(error)}"
+        )
+        print(failure_message)
+        send_telegram(failure_message)
+        return
 
     if not current_data:
-        print("❌ 데이터 수집 실패")
-        send_telegram("❌ Benecafe 데이터 수집 실패")
+        failure_message = format_collection_failure_message("수집 결과가 비어 있음")
+        print(failure_message)
+        send_telegram(failure_message)
         return
 
     # 5. 데이터 비교 로직
